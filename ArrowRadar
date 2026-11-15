@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Weather Radar — MVP</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #f0f2f5; height: 100vh; }
+  .header { padding: 14px 24px; background: #1a202c; color: #fff; display: flex; gap: 10px; flex-wrap: wrap; }
+  #search { flex: 1; min-width: 220px; }
+  #search input { width: 100%; padding: 10px 12px; border: 1px solid #334155; border-radius: 8px; background: #1a202c; color: #fff; }
+  .btn { padding: 10px 14px; border: none; border-radius: 8px; background: #00c851; color: #fff; cursor: pointer; }
+  .mode { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+  .mb { padding: 8px 12px; border: 1px solid #555; border-radius: 6px; background: #2a303c; color: #ccc; cursor: pointer; }
+  .mb.active { background: #00c851; color: #fff; }
+  #map { width: 100%; height: 55vh; margin-top: 16px; }
+  .card { padding: 16px; background: #fff; border-radius: 12px; margin-top: 16px; display: none; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  .err { color: #d32; margin-top: 12px; }
+  .legend { padding: 12px; background: #fff; border-radius: 8px; margin-top: 12px; font-size: 12px; color: #555; }
+  .attribution { margin-top: 24px; padding: 14px; background: #e3e7eb; border-radius: 8px; font-size: 11px; color: #666; }
+  .loading { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.7); color: #fff; padding: 20px; border-radius: 8px; display: none; z-index: 100; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <input id="search" type="text" placeholder="Город (например, Москва)" onkeydown="if(event.key==='Enter') doSearch()">
+  <button class="btn" id="go" onclick="doSearch()">Найти</button>
+  <button class="btn" id="myLoc" onclick="getMyLocation()">🎯 Моё местоположение</button>
+</div>
+
+<div class="mode">
+  <button class="mb active" data-mode="weather" onclick="switchMode('weather')">Погода</button>
+  <button class="mb" data-mode="radar" onclick="switchMode('radar')">Радар</button>
+</div>
+
+<div id="map"></div>
+
+<div class="card" id="card">
+  <h3 id="cityName">Москва</h3>
+  <div>Температура: <span id="temp">—</span> °C</div>
+  <div>Ветер: <span id="wind">—</span> км/ч</div>
+  <div>Осадки: <span id="precip">—</span></div>
+  <div class="err" id="err"></div>
+</div>
+
+<div class="legend" id="legend" style="display:none;">
+  Интенсивность: лёгкая → умеренная → сильная → очень сильная
+  <div style="display:flex;gap:8px;margin-top:8px">
+    <div style="width:44px;height:24px;border-radius:4px;background:#90EE90"></div>
+    <div style="width:44px;height:24px;border-radius:4px;background:#FFFF00"></div>
+    <div style="width:44px;height:24px;border-radius:4px;background:#FFA500"></div>
+    <div style="width:44px;height:24px;border-radius:4px;background:#FF0000"></div>
+    <div style="width:44px;height:24px;border-radius:4px;background:#8A0808"></div>
+  </div>
+</div>
+
+<div class="attribution">
+  Погода: Open-Meteo (api.open-meteo.com, для некоммерческого использования). Сайт: https://open-meteo.com<br>
+  Радар: RainViewer (публичный API для личного и учебного использования). Сайт: https://www.rainviewer.com/api.html
+</div>
+
+<div class="loading" id="loading">Загрузка…</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('map').setView([55.75, 37.62], 8);
+L.tileLayer('https://{s}.basemaps.cartousercontent.com/raster/world_light/{z}/{x}/{y}', {
+  attribution: '&copy; OpenStreetMap, CARTO'
+}).addTo(map);
+
+let lat = 55.75, lon = 37.62, radarLayers = [], mode = 'weather';
+
+function switchMode(m) {
+  mode = m;
+  document.querySelectorAll('.mb').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  if (m === 'weather') { showCard(); hideRadar(); } else { showRadar(); hideCard(); }
+}
+
+function hideRadar() { radarLayers.forEach(l => map.removeLayer(l)); radarLayers = []; document.getElementById('legend').style.display = 'none'; }
+function hideCard() { document.getElementById('card').style.display = 'none'; }
+function showCard() { document.getElementById('card').style.display = 'block'; document.getElementById('err').textContent = ''; }
+
+function setLoading(s) { document.getElementById('loading').style.display = s; }
+
+function doSearch() {
+  const q = document.getElementById('search').value.trim();
+  if (!q) return;
+  setLoading('block');
+  fetch(`https://api.open-meteo.com/v1/geocoding?language=ru&names=${encodeURIComponent(q)}&count=1`)
+    .then(r => r.json())
+    .then(d => {
+      if (d.results && d.results.length) {
+        lat = d.results[0].latitude; lon = d.results[0].longitude;
+        map.setView([lat, lon], 9);
+        getWeather();
+        if (mode === 'radar') getRadar();
+      } else {
+        document.getElementById('err').textContent = 'Город не найден.';
+      }
+    })
+    .catch(e => document.getElementById('err').textContent = 'Ошибка сети.')
+    .finally(() => setLoading('none'));
+}
+
+function getMyLocation() {
+  if (!navigator.geolocation) { document.getElementById('err').textContent = 'Геолокация недоступна.'; return; }
+  setLoading('block');
+  navigator.geolocation.getCurrentPosition(p => {
+    lat = p.coords.latitude; lon = p.coords.longitude;
+    map.setView([lat, lon], 10);
+    getWeather();
+    if (mode === 'radar') getRadar();
+  }, e => { document.getElementById('err').textContent = 'Доступ к геолокации запрещён.'; setLoading('none'); })
+  .catch(() => { setLoading('none'); });
+}
+
+function getWeather() {
+  fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,wind_speed_10m&timezone=auto`)
+    .then(r => r.json())
+    .then(d => {
+      const c = d.current;
+      document.getElementById('cityName').textContent = document.getElementById('search').value.trim() || 'Москва';
+      document.getElementById('temp').textContent = c.temperature_2m !== undefined ? c.temperature_2m : '—';
+      document.getElementById('wind').textContent = c.wind_speed_10m !== undefined ? c.wind_speed_10m : '—';
+      document.getElementById('precip').textContent = c.precipitation !== undefined ? c.precipitation + ' мм' : '—';
+      showCard();
+    })
+    .catch(e => { document.getElementById('err').textContent = 'Не удалось загрузить погоду.'; showCard(); });
+}
+
+function getRadar() {
+  hideRadar();
+  setLoading('block');
+  fetch(`https://www.rainviewer.com/public/weather-maps.json?q=${lat},
